@@ -682,6 +682,17 @@ function collapse(s: string): string {
  *   GET /GetExchangeRates?asJson=true   -> {exchangeRates:[{key,currentExchangeRate,currentChange,unit,lastUpdate}]}
  *   GET /GetExchangeRate?key=USD&asJson=true -> single {key,currentExchangeRate,currentChange,unit,lastUpdate} (404+JSON on bad key)
  *   GET /GetInterest?asJson=true        -> {currentInterest,nextInterestDate,lastPublishedDate} (BOI policy rate, %)
+ *
+ * GetInterest has no history variant and the PublicApi has no other confirmed
+ * endpoint for one (every other plausible path either 404s cleanly or hits
+ * the site's WAF challenge page); a "Fusion Data Browser" statistics portal
+ * exists at edge.boi.gov.il but its own API base path isn't discoverable from
+ * its public bundle. lastPublishedDate is a data-refresh timestamp, not
+ * reliably the decision date. So boi_interest_rate's effective_since/
+ * previous_rate/decision_history are sourced from BOI_RATE_HISTORY below —
+ * the Monetary Committee's own published decisions — and cross-checked
+ * against the live currentInterest on every call; see policyRate() (fleet
+ * #3214).
  */
 
 
@@ -695,6 +706,21 @@ async function pwFetch(url: string | URL, init?: RequestInit): Promise<Response>
 
 const BASE = 'https://boi.org.il/PublicApi';
 const UA = 'pipeworx-mcp-boi-il/1.0 (+https://pipeworx.io)';
+
+// Bank of Israel, Monetary Committee interest-rate decisions — most recent
+// first, actual CHANGES only (meetings that held are not listed). Sourced
+// from the Committee's own published decisions; the PublicApi has no
+// machine-readable history for this. Verified against the live rate
+// 2026-10-17 (3.25%, matching the top entry). Needs a manual refresh after
+// the next decision — policyRate() below detects staleness rather than
+// silently serving an outdated effective_since when that happens.
+const BOI_RATE_HISTORY: { date: string; rate: number }[] = [
+  { date: '2026-09-01', rate: 3.25 },
+  { date: '2026-07-06', rate: 3.5 },
+  { date: '2026-01-05', rate: 4.0 },
+  { date: '2024-01-01', rate: 4.5 },
+  { date: '2023-05-22', rate: 4.75 },
+];
 
 const tools: McpToolExport['tools'] = [
   {
@@ -716,7 +742,11 @@ const tools: McpToolExport['tools'] = [
   {
     name: 'boi_interest_rate',
     description:
-      'The current Bank of Israel (BOI) policy interest rate for ISRAEL — the Israeli benchmark rate set by the Bank of Israel Monetary Committee, in % per annum. Returns currentInterest (the Israeli policy rate), nextInterestDate (next Israeli rate decision), and lastPublishedDate. Scope: Israel only.',
+      'The current Bank of Israel (BOI) policy interest rate for ISRAEL — the Israeli benchmark rate set by the ' +
+      'Bank of Israel Monetary Committee, in % per annum. Returns rate, the date it took effect (effective_since), ' +
+      'the previous rate and when that one took effect, plus recent decision history, sourced from the Monetary ' +
+      "Committee's own published decisions (not just currentInterest's bare snapshot). Also returns " +
+      'nextInterestDate (the next scheduled decision) and lastPublishedDate. Scope: Israel only.',
     inputSchema: { type: 'object', properties: {} },
   },
 ];
@@ -740,10 +770,57 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
       }
     }
     case 'boi_interest_rate':
-      return boiGet('/GetInterest?asJson=true');
+      return policyRate();
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
+}
+
+async function policyRate() {
+  const live = (await boiGet('/GetInterest?asJson=true')) as {
+    currentInterest: number;
+    nextInterestDate: string;
+    lastPublishedDate: string;
+  };
+  const [latest, previous] = BOI_RATE_HISTORY;
+  const liveMatchesKnownHistory = typeof live.currentInterest !== 'number' || live.currentInterest === latest.rate;
+  if (!liveMatchesKnownHistory) {
+    // The live rate has moved past what BOI_RATE_HISTORY knows about — a
+    // decision happened that this pack hasn't been updated for. Say so
+    // loudly rather than silently attaching the OLD effective_since to the
+    // NEW rate, which would be confidently wrong in exactly the way #3204
+    // was filed over.
+    return {
+      rate: live.currentInterest,
+      unit: 'percent',
+      effective_since: null,
+      previous_rate: latest.rate,
+      previous_rate_effective_since: latest.date,
+      decision_history: BOI_RATE_HISTORY,
+      data_as_of: live.lastPublishedDate,
+      nextInterestDate: live.nextInterestDate,
+      error: 'stale_decision_history',
+      message:
+        `The live Bank of Israel rate (${live.currentInterest}%) does not match this pack's known decision ` +
+        `history (last known: ${latest.rate}% since ${latest.date}) — the Monetary Committee made a newer ` +
+        'decision than this pack has on record. previous_rate/previous_rate_effective_since are the last KNOWN ' +
+        'decision; the exact date the new rate took effect is not known until BOI_RATE_HISTORY is updated.',
+    };
+  }
+  return {
+    rate: latest.rate,
+    unit: 'percent',
+    effective_since: latest.date,
+    previous_rate: previous?.rate ?? null,
+    previous_rate_effective_since: previous?.date ?? null,
+    decision_history: BOI_RATE_HISTORY,
+    data_as_of: live.lastPublishedDate,
+    nextInterestDate: live.nextInterestDate,
+    note:
+      "effective_since/previous_rate/decision_history are sourced from the Bank of Israel Monetary Committee's " +
+      'own published decisions (the PublicApi has no history endpoint, only a current snapshot) and cross-checked ' +
+      'against the live rate on every call.',
+  };
 }
 
 async function boiGet(path: string): Promise<unknown> {

@@ -2,7 +2,7 @@
 
 Bank of Israel public API MCP. Keyless.
 
-Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1683+ live data sources.
+Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1819+ live data sources. This is an independent, unofficial integration — not affiliated with, endorsed by, or published by the upstream provider.
 
 ## Tools
 
@@ -10,7 +10,7 @@ Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents 
 |------|-------------|
 | `boi_exchange_rates` | All current Bank of Israel representative exchange rates vs the Israeli Shekel (ILS). Returns one entry per currency with currentExchangeRate (shekels per `unit` of the foreign currency), currentChange (% vs previous), unit (1 for most, 100 for some like JPY — per-1 rate = currentExchangeRate / unit), and lastUpdate. Use this for a snapshot of all available currencies. |
 | `boi_exchange_rate` | Current Bank of Israel representative exchange rate for a single currency vs the Israeli Shekel (ILS), by 3-letter ISO code. Returns currentExchangeRate (shekels per `unit`), currentChange (%), unit, and lastUpdate. Note `unit` (e.g. JPY is per 100). Example keys: USD, EUR, GBP, JPY, CHF, CAD, AUD. |
-| `boi_interest_rate` | The current Bank of Israel (BOI) policy interest rate for ISRAEL — the Israeli benchmark rate set by the Bank of Israel Monetary Committee, in % per annum. Returns currentInterest (the Israeli policy rate), nextInterestDate (next Israeli rate decision), and lastPublishedDate. Scope: Israel only. |
+| `boi_interest_rate` | The current Bank of Israel (BOI) policy interest rate for ISRAEL — the Israeli benchmark rate set by the Bank of Israel Monetary Committee, in % per annum. Returns rate, the date it took effect (effective_since), the previous rate and when that one took effect, plus recent decision history, sourced from the Monetary Committee's own published decisions (not just currentInterest's bare snapshot). Also returns nextInterestDate (the next scheduled decision) and lastPublishedDate. Scope: Israel only. |
 
 ## Quick Start
 
@@ -56,7 +56,7 @@ directly, instead of just this one's:
 }
 ```
 
-Both URLs reach the same gateway and the same 1683+ data sources. The
+Both URLs reach the same gateway and the same 1819+ data sources. The
 only difference is which pack's tools are listed **directly**; `ask_pipeworx`
 reaches all of them from either one.
 
