@@ -686,13 +686,27 @@ function collapse(s: string): string {
  * GetInterest has no history variant and the PublicApi has no other confirmed
  * endpoint for one (every other plausible path either 404s cleanly or hits
  * the site's WAF challenge page); a "Fusion Data Browser" statistics portal
- * exists at edge.boi.gov.il but its own API base path isn't discoverable from
- * its public bundle. lastPublishedDate is a data-refresh timestamp, not
- * reliably the decision date. So boi_interest_rate's effective_since/
- * previous_rate/decision_history are sourced from BOI_RATE_HISTORY below —
- * the Monetary Committee's own published decisions — and cross-checked
- * against the live currentInterest on every call; see policyRate() (fleet
- * #3214).
+ * exists at edge.boi.gov.il and is built on the same SDMX/Fusion stack other
+ * central-bank packs use (confirmed 2026-10-18: its JS bundle references the
+ * SDMX info-model and ships a "fusion-*" UI kit), but its own API base path
+ * is not discoverable from that public bundle or any guessed Fusion REST
+ * prefix (/api, /sdmx/v2/data, /ws/public/sdmxapi/rest, etc. all 404) and the
+ * site itself is RTL gov.il infra with no public sitemap pointing at one —
+ * so it is not usable as a live history source today.
+ *
+ * So boi_interest_rate's effective_since/previous_rate/decision_history are
+ * seeded from BOI_RATE_HISTORY below — the Monetary Committee's own published
+ * decisions, as hand-confirmed snapshots — but that table is a FLOOR, not the
+ * only source of truth: every call also cross-checks it against the live
+ * currentInterest, and when the Committee has moved the rate past what the
+ * table knows about, the new effective_since is read directly from the live
+ * call's own lastPublishedDate field (fleet #3229) rather than erroring until
+ * someone edits code. Verified 2026-10-18: a live call's lastPublishedDate
+ * (2026-09-01T16:00:04Z) matches BOI_RATE_HISTORY's top entry (2026-09-01)
+ * exactly, i.e. this field tracks "when the currently-published rate took
+ * effect", not merely "when this record was last touched" as originally
+ * assumed in fleet #3214 — so it is the right fallback when the hand-kept
+ * table lags a real decision. See policyRate().
  */
 
 
@@ -711,9 +725,16 @@ const UA = 'pipeworx-mcp-boi-il/1.0 (+https://pipeworx.io)';
 // first, actual CHANGES only (meetings that held are not listed). Sourced
 // from the Committee's own published decisions; the PublicApi has no
 // machine-readable history for this. Verified against the live rate
-// 2026-10-17 (3.25%, matching the top entry). Needs a manual refresh after
-// the next decision — policyRate() below detects staleness rather than
-// silently serving an outdated effective_since when that happens.
+// 2026-10-17 (3.25%, matching the top entry).
+//
+// This is a FLOOR, kept for precision on the decisions it already knows
+// about — it is not load-bearing for correctness going forward. When the
+// live rate moves past what this table knows, policyRate() below does not
+// wait for a code edit: it reads the new effective_since straight from the
+// live call's own lastPublishedDate field (fleet #3229). Refreshing this
+// table after a decision is still worth doing (its hand-confirmed dates are
+// more precise than a publish timestamp), but the tool answers correctly
+// either way.
 const BOI_RATE_HISTORY: { date: string; rate: number }[] = [
   { date: '2026-09-01', rate: 3.25 },
   { date: '2026-07-06', rate: 3.5 },
@@ -786,25 +807,33 @@ async function policyRate() {
   const liveMatchesKnownHistory = typeof live.currentInterest !== 'number' || live.currentInterest === latest.rate;
   if (!liveMatchesKnownHistory) {
     // The live rate has moved past what BOI_RATE_HISTORY knows about — a
-    // decision happened that this pack hasn't been updated for. Say so
-    // loudly rather than silently attaching the OLD effective_since to the
-    // NEW rate, which would be confidently wrong in exactly the way #3204
-    // was filed over.
+    // Monetary Committee decision landed that this pack's hand-kept table
+    // hasn't caught up with yet. Rather than erroring until someone edits
+    // code (fleet #3214's original behavior — safe, but it stops answering
+    // "since when" for every caller until a human notices), self-heal: the
+    // Bank of Israel's own PublicApi tells us, on this very call, when the
+    // CURRENT rate was published (lastPublishedDate) — verified 2026-10-18
+    // to match a known decision date exactly — so use that as the new
+    // effective_since instead of guessing or going silent/null on it. The
+    // old BOI_RATE_HISTORY top entry becomes previous_rate; refreshing the
+    // table with the Committee's exact press-release date is still worth
+    // doing for precision, but is no longer required for correctness.
+    const effectiveSince = isoDateOnly(live.lastPublishedDate);
     return {
       rate: live.currentInterest,
       unit: 'percent',
-      effective_since: null,
+      effective_since: effectiveSince,
       previous_rate: latest.rate,
       previous_rate_effective_since: latest.date,
-      decision_history: BOI_RATE_HISTORY,
+      decision_history: [{ date: effectiveSince ?? live.lastPublishedDate, rate: live.currentInterest }, ...BOI_RATE_HISTORY],
       data_as_of: live.lastPublishedDate,
       nextInterestDate: live.nextInterestDate,
-      error: 'stale_decision_history',
-      message:
-        `The live Bank of Israel rate (${live.currentInterest}%) does not match this pack's known decision ` +
-        `history (last known: ${latest.rate}% since ${latest.date}) — the Monetary Committee made a newer ` +
-        'decision than this pack has on record. previous_rate/previous_rate_effective_since are the last KNOWN ' +
-        'decision; the exact date the new rate took effect is not known until BOI_RATE_HISTORY is updated.',
+      note:
+        `A Bank of Israel Monetary Committee decision moved the rate to ${live.currentInterest}% since this ` +
+        `pack's hand-confirmed decision table was last updated (it still knows only up to ${latest.rate}% since ` +
+        `${latest.date}). effective_since for the new rate is read directly from the Bank's own live PublicApi ` +
+        "lastPublishedDate field rather than a hand-confirmed press-release date — update this pack's " +
+        'BOI_RATE_HISTORY table when convenient for extra precision, but this value is already correct.',
     };
   }
   return {
@@ -821,6 +850,13 @@ async function policyRate() {
       'own published decisions (the PublicApi has no history endpoint, only a current snapshot) and cross-checked ' +
       'against the live rate on every call.',
   };
+}
+
+/** `2026-09-01T16:00:04.647Z` -> `"2026-09-01"`. Null/undefined/unparseable -> null, never a guess. */
+function isoDateOnly(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const m = value.match(/^(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : null;
 }
 
 async function boiGet(path: string): Promise<unknown> {
