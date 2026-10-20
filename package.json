@@ -1,6 +1,6 @@
 {
   "name": "@pipeworx/mcp-boi-il",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Bank of Israel public API MCP. Keyless.",
   "type": "module",
   "main": "src/index.ts",
@@ -26,7 +26,7 @@
     "@cloudflare/workers-types": "^4.20260405.1"
   },
   "pipeworx": {
-    "sourceHash": "v1-aedda898b2cbc92a1e13a42f0b768ebc0491da90587f9fc3cedbc159ca000de1",
-    "sourceCommit": "514e3efb42b8d81082c07e01d3ae7654bbf91f52"
+    "sourceHash": "v1-dd13dbe0fee22d001f4772550b4b5c59cff3c8d4b86b9e026f9c12d2f07f3a02",
+    "sourceCommit": "5d8d3a58a457b8464c117515d81b8b6ecb53fdfb"
   }
 }
